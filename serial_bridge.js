@@ -1,3 +1,15 @@
+/**
+ * @file serial_bridge.js
+ * @brief USB Serial to WebSocket Bridge
+ * @version 2.0.0
+ * @date 2026-01-20
+ * 
+ * Reads newline-delimited JSON from a serial port (e.g., Arduino/Xiao)
+ * and broadcasts it to connected WebSocket clients for visualization.
+ * 
+ * @copyright Copyright (c) 2026 Antigravity
+ */
+
 const WebSocket = require('ws');
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
