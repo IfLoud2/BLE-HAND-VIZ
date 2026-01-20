@@ -115,6 +115,9 @@ class App {
             MIDDLE: THREE.MOUSE.DOLLY,
             RIGHT: THREE.MOUSE.ROTATE
         };
+
+        // DISABLE CONTEXT MENU (Critical for Right-Click Rotate)
+        this.renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
     createPropellerSystem(color, dir) {
