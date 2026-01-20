@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Orientation Viz</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="ui-container">
+        <div class="status-panel">
+            <h1>Hand IMU Viz</h1>
+            <div id="connection-status" class="status -disconnected">Disconnected</div>
+            <div class="telemetry-grid">
+                <!-- Orientation -->
+                <div class="telemetry-section">
+                    <h3>Orientation</h3>
+                    <div class="metric">R: <span id="val-r">0.0</span>&deg;</div>
+                    <div class="metric">P: <span id="val-p">0.0</span>&deg;</div>
+                    <div class="metric">Y: <span id="val-y">0.0</span>&deg;</div>
+                </div>
+
+                <!-- Motors -->
+                <div class="telemetry-section">
+                    <h3>Motor Output</h3>
+                    <div class="motor-row">
+                        <span class="label">FL</span>
+                        <div class="bar-container">
+                            <div id="bar-fl" class="bar"></div>
+                        </div>
+                        <span id="val-fl" class="val">0%</span>
+                    </div>
+                    <div class="motor-row">
+                        <span class="label">FR</span>
+                        <div class="bar-container">
+                            <div id="bar-fr" class="bar"></div>
+                        </div>
+                        <span id="val-fr" class="val">0%</span>
+                    </div>
+                    <div class="motor-row">
+                        <span class="label">BL</span> <!-- Rear Left -->
+                        <div class="bar-container">
+                            <div id="bar-bl" class="bar"></div>
+                        </div>
+                        <span id="val-bl" class="val">0%</span>
+                    </div>
+                    <div class="motor-row">
+                        <span class="label">BR</span> <!-- Rear Right -->
+                        <div class="bar-container">
+                            <div id="bar-br" class="bar"></div>
+                        </div>
+                        <span id="val-br" class="val">0%</span>
+                    </div>
+                </div>
+            </div>
+            <button id="btn-reset-yaw" class="action-btn">Reset Yaw</button>
+            <div class="legend">
+                <div class="axis x">X = Pitch (Red)</div>
+                <div class="axis y">Y = Yaw (Green)</div>
+                <div class="axis z">Z = Roll (Blue)</div>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
