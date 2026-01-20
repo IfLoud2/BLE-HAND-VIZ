@@ -1,10 +1,14 @@
 import * as THREE from 'three';
-const CONFIG = { wsUrl: 'ws://localhost:8080' };
+const CONFIG = { wsUrl: 'ws://localhost:8082' };
 let orientation = { r: 0, p: 0, y: 0 };
+let yawOffset = 0;
 class App {
     constructor() {
         this.initThree();
         this.initWebSocket();
+        document.getElementById('btn-reset-yaw').addEventListener('click', () => {
+            yawOffset = orientation.y;
+        });
         this.animate();
     }
     initThree() {
