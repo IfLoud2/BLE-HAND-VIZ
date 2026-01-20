@@ -11,6 +11,7 @@
  */
 
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- Configuration ---
 const CONFIG = {
@@ -100,6 +101,20 @@ class App {
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(this.renderer.domElement);
+
+        // --- OrbitControls ---
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true; // Smooth motion
+        this.controls.dampingFactor = 0.05;
+        this.controls.minDistance = 5;
+        this.controls.maxDistance = 100;
+
+        // MAPPING: Right Click to Rotate (User Request)
+        this.controls.mouseButtons = {
+            LEFT: THREE.MOUSE.PAN,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.ROTATE
+        };
     }
 
     createPropellerSystem(color, dir) {
@@ -366,6 +381,9 @@ class App {
 
     animate() {
         requestAnimationFrame(this.animate.bind(this));
+
+        // Update Controls (damping)
+        if (this.controls) this.controls.update();
 
         // Update Orientation
         const pitchRad = THREE.MathUtils.degToRad(orientation.p);
