@@ -4,14 +4,14 @@
 
 ```mermaid
 graph TD
-    HW[Hardware: Seeed Xiao nRF52840] -->|USB Serial (JSON)| Bridge[Serial Bridge (Node.js)]
-    Mock[Mock Server (Node.js)] -.->|Alt Source| Bridge
-    Bridge -->|WebSocket :8082| Client[Web Client (Three.js)]
+    HW["Hardware: Seeed Xiao nRF52840"] -->|"USB Serial (JSON)"| Bridge["Serial Bridge (Node.js)"]
+    Mock["Mock Server (Node.js)"] -.->|"Alt Source"| Bridge
+    Bridge -->|"WebSocket :8082"| Client["Web Client (Three.js)"]
     
     subgraph "Web Client Application"
         WS[WebSocket Handler] -->|JSON| Parser[Data Parser]
         Parser -->|Orientation| Physics[Physics Engine]
-        Physics -->|Motor Throttle| Viz[Visualization / Rendering]
+        Physics -->|Motor Throttle| Viz["Visualization / Rendering"]
         Physics -->|Telemetry| UI[DOM UI Update]
     end
 ```
