@@ -17,6 +17,14 @@ IF %ERRORLEVEL% NEQ 0 (
     ECHO     Dependencies OK.
 )
 
+:: 0.5 Show IP Address (Helpful for RPi connection)
+ECHO.
+ECHO [INFO] YOUR PC IP ADDRESSES:
+ipconfig | findstr "IPv4"
+ECHO.
+ECHO [!] Enter one of these IPs on your Raspberry Pi command!
+ECHO.
+
 :: 1. Start Hub Server (Node.js)
 ECHO [1/3] Starting Hub Server (Port 8082)...
 start "Hub Server" cmd /k "node hub_server.js"
