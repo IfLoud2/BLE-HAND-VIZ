@@ -11,6 +11,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.exc import BleakError
 
 import websockets
+import struct
 from websockets.client import connect as ws_connect
 
 # Configure logging
@@ -69,11 +70,7 @@ class BLEBridge:
                 logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
                 await asyncio.sleep(5)
 
-import struct
 
-# ... (Previous imports)
-
-# ...
 
     async def ble_loop(self):
         """Inner loop for BLE connection and handling."""
