@@ -7,6 +7,16 @@ ECHO      STARTING BLE HAND VIZ SYSTEM (MERGED)
 ECHO ===================================================
 ECHO.
 
+:: 0. Check/Install Dependencies
+ECHO [0/3] Checking Dependencies...
+pip install -r python/requirements.txt >NUL 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO [!] Warning: Failed to auto-install dependencies. 
+    ECHO     Please run: pip install -r python/requirements.txt manually if issues occur.
+) ELSE (
+    ECHO     Dependencies OK.
+)
+
 :: 1. Start Hub Server (Node.js)
 ECHO [1/3] Starting Hub Server (Port 8082)...
 start "Hub Server" cmd /k "node hub_server.js"
