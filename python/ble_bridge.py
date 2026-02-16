@@ -87,28 +87,41 @@ class BLEBridge:
 
             def notification_handler(sender: BleakGATTCharacteristic, data: bytearray):
                 try:
-                    # Handle binary data (24 bytes -> 6 floats)
-                    if len(data) == 24:
-                        v = struct.unpack('<6f', data)
-                        # Assumed mapping: r, p, y are the first 3 or specific ones. 
-                        # We send all as a list or map to r,p,y if sure.
-                        # sending raw object for flexibility
+                try:
+                    # Handle binary data (32 bytes -> 8 floats)
+                    # Payload: [q0, q1, q2, q3, quality, bx, by, bz]
+                    if len(data) == 32:
+                        v = struct.unpack('<8f', data)
+                        
                         payload = {
-                            "r": v[0], "p": v[1], "y": v[2],
-                            "ax": v[3], "ay": v[4], "az": v[5]
+                            "quat": {
+                                "w": v[0], 
+                                "x": v[1], 
+                                "y": v[2], 
+                                "z": v[3]
+                            },
+                            "quality": v[4],
+                            "bias": {
+                                "x": v[5], 
+                                "y": v[6], 
+                                "z": v[7]
+                            }
                         }
+                        
                         if self.debug:
-                            logger.info(f"RX: {payload}")
+                            # Log occassionally or if needed
+                            pass # logger.info(f"RX: {payload}")
                         
                         json_data = json.dumps(payload)
                         asyncio.create_task(self.forward_data(json_data))
+                    
+                    elif len(data) == 24:
+                         # Backward compatibility? Or just ignore.
+                         logger.warning("Received 24 bytes (Old Firmware?)")
+
                     else:
-                        # Fallback to text if strictly text
+                        # Fallback to text
                         text_data = data.decode('utf-8').strip()
-                        if self.debug:
-                            logger.info(f"RX (Text): {text_data}")
-                        json_data = json.loads(text_data)
-                        asyncio.create_task(self.forward_data(text_data))
 
                 except Exception as ex:
                     if self.debug:
