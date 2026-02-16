@@ -197,40 +197,32 @@ class App {
                 try {
                     const data = JSON.parse(event.data);
 
-                    if (data.quat) {
-                        // NEW Quaternion Mode
-                        // Firmware sends Madgwick (NED/Standard). Three.js is ENU.
-                        // Common Mapping: q.x = q.y, q.y = q.z, q.z = q.x for Y-Up?
-                        // Actually, Madgwick output is usually q0(w), q1(x), q2(y), q3(z).
+                    /* 
+                       Hybrid Firmware sends Euler Angles (Legacy Protocol Structure) 
+                       data = { r, p, y, ax, ay, az } 
+                    */
 
-                        // Experimentally found nice mapping for hand-held IMU:
-                        const qRaw = new THREE.Quaternion(
-                            data.quat.x,
-                            data.quat.z,
-                            -data.quat.y,
-                            data.quat.w
-                        );
+                    if (data.r !== undefined) {
+                        orientation.r = data.r;
+                        orientation.p = data.p;
+                        orientation.y = data.y;
 
-                        droneQuaternion.copy(qRaw);
-                        quality = data.quality;
-
-                        // Update R info with quality
-                        const rEl = document.getElementById('val-r');
-                        if (rEl) rEl.textContent = "Q:" + quality.toFixed(2);
-                    }
-                    else if (data.r !== undefined) {
-                        // Fallback Old Mode (Euler)
-                        orientation.r = data.r ?? 0;
-                        orientation.p = data.p ?? 0;
-                        orientation.y = data.y ?? 0;
-
+                        // Convert to Quaternion for smooth Viz
+                        // Mapping: Pitch->X, Yaw->Y, Roll->Z (standard aerospace to Three.js)
                         const e = new THREE.Euler(
-                            THREE.MathUtils.degToRad(orientation.p),
-                            THREE.MathUtils.degToRad(orientation.y),
-                            THREE.MathUtils.degToRad(orientation.r),
+                            THREE.MathUtils.degToRad(data.p), // Pitch
+                            THREE.MathUtils.degToRad(data.y), // Yaw
+                            THREE.MathUtils.degToRad(data.r), // Roll
                             'YXZ'
                         );
                         droneQuaternion.setFromEuler(e);
+
+                        // Use Accel Norm as a proxy for "Quality"
+                        const accMag = Math.sqrt(data.ax * data.ax + data.ay * data.ay + data.az * data.az);
+                        quality = Math.abs(accMag - 1.0);
+
+                        const rEl = document.getElementById('val-r');
+                        if (rEl) rEl.textContent = "Q:" + quality.toFixed(2);
                     }
                 } catch (e) { }
             };
