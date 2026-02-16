@@ -1,13 +1,7 @@
 /**
  * @file app.js
- * @brief Three.js Application Logic for Hand Viz
- * @version 2.0.0
- * @date 2026-01-20
- * 
- * Main entry point for the Drone Simulator. Handles Three.js scene setup,
- * WebSocket communication, and physics visualization logic.
- * 
- * @copyright Copyright (c) 2026 Antigravity
+ * @brief Three.js Application Logic for Hand Viz (Dual IMU Fusion Version)
+ * @version 2.2.0
  */
 
 import * as THREE from 'three';
@@ -21,14 +15,14 @@ const CONFIG = {
         body: 0x222222, // Matte Black Carbon
         arm: 0x444444,  // Dark Grey
         motor: 0x888888,// Silver
-        propCW: 0x333333,  // Black props
-        propCCW: 0x333333, // Black props
-        propTraceCW: 0xff3300, // Orange trace for CW
-        propTraceCCW: 0x0033ff // Blue trace
+        propCW: 0x333333,
+        propCCW: 0x333333,
+        propTraceCW: 0xff3300,
+        propTraceCCW: 0x0033ff
     },
     physics: {
         maxRpm: 4000,
-        hoverThrottle: 55, // Base hover %
+        hoverThrottle: 55,
         pitchGain: 0.8,
         rollGain: 0.8,
         yawGain: 0.5,
@@ -38,104 +32,293 @@ const CONFIG = {
 
 // --- State ---
 let droneQuaternion = new THREE.Quaternion();
-let yawOffsetQuat = new THREE.Quaternion(); // Identity
+let yawCorrection = 0; // Rotation scalar (radians)
 let quality = 0;
 let isConnected = false;
 
-// ...
+// Legacy orientation for text display
+let orientation = { r: 0, p: 0, y: 0 };
 
-initWebSocket() {
-    const connect = () => {
-        this.ws = new WebSocket(CONFIG.wsUrl);
-        this.ws.onopen = () => {
-            isConnected = true;
-            document.getElementById('connection-status').textContent = 'Connected';
-            document.getElementById('connection-status').className = 'status -connected';
-        };
-        this.ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                if (data.quat) {
-                    // NEW Quaternion Mode
-                    // Firmware sends Madgwick (NED or similar). 
-                    // Three.js is ENU (Right Handed, Y-up).
-                    // Mapping usually: (y, z, x, w) or similar shuffle.
-                    // Standard conversion for Madgwick NED -> Three.js:
-                    // q.x = data.quat.y
-                    // q.y = data.quat.z
-                    // q.z = data.quat.x
-                    // q.w = data.quat.w 
-                    // (Needs tuning based on sensor mounting! for now we try standard)
-
-                    const qRaw = new THREE.Quaternion(
-                        data.quat.x,  // b.y -> t.x
-                        data.quat.z,  // b.z -> t.y (Up)
-                        -data.quat.y, // b.x -> t.z (Forward) - check signs
-                        data.quat.w
-                    );
-
-                    droneQuaternion.copy(qRaw);
-                    quality = data.quality;
-
-                    // Update Telemetry Text
-                    document.getElementById('val-r').textContent = quality.toFixed(2); // Hack: show quality in R slot
-                }
-                else if (data.r !== undefined) {
-                    // Fallback Old Mode
-                    // ...
-                }
-            } catch (e) { }
-        };
-        // ...
-    };
-    connect();
+// --- Helpers ---
+function clamp(val, min, max) {
+    return Math.min(Math.max(val, min), max);
 }
 
-// ...
+// --- Components ---
+class App {
+    constructor() {
+        this.motorData = [
+            { id: 'FL', throttle: 0, mesh: null, blurMesh: null, dir: 1 },
+            { id: 'FR', throttle: 0, mesh: null, blurMesh: null, dir: -1 },
+            { id: 'BL', throttle: 0, mesh: null, blurMesh: null, dir: -1 },
+            { id: 'BR', throttle: 0, mesh: null, blurMesh: null, dir: 1 }
+        ];
 
-resetYaw() {
-    // Capture current Y rotation as offset
-    // Simplified: Just align current forward vector to World Forward?
-    // Or store inverse of current rotation?
-    // Detailed: We want to keep pitch/roll but zero yaw.
-    // We will just store the inverse of the current Heading component?
-    // Easiest UI Hack: Just apply an offset to the mesh Group.
+        this.initThree();
+        this.initScene();
+        this.initWebSocket();
+        this.onWindowResize();
 
-    // Actually, user wants Re-Zero Yaw.
-    // We can get Euler, zero Y, reconstruction?
-    const euler = new THREE.Euler().setFromQuaternion(droneQuaternion, 'YXZ');
-    this.yawCorrection = -euler.y;
-}
+        window.addEventListener('resize', this.onWindowResize.bind(this));
 
-animate() {
-    requestAnimationFrame(this.animate.bind(this));
-    if (this.controls) this.controls.update();
+        const btn = document.getElementById('btn-reset-yaw');
+        if (btn) btn.addEventListener('click', this.resetYaw.bind(this));
 
-    // Update Orientation
-    // Apply Orientation to Drone
-    // Viz Logic: Drone Group has the quaternion
+        this.animate();
+    }
 
-    this.droneGroup.quaternion.copy(droneQuaternion);
+    initThree() {
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(CONFIG.colors.bg);
+        this.scene.fog = new THREE.Fog(CONFIG.colors.bg, 30, 150);
 
-    // Apply Yaw Correction manually via parent group or just rotate Y
-    // To do this cleanly, we might rotate the "World" or Camera, but rotating object is ok.
-    this.droneGroup.rotateY(this.yawCorrection || 0);
+        this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        this.camera.position.set(25, 25, 30);
+        this.camera.lookAt(0, 0, 0);
 
-    // ... Physics calculation usage need Euler ...
-    const euler = new THREE.Euler().setFromQuaternion(this.droneGroup.quaternion, 'YXZ');
-    orientation.r = THREE.MathUtils.radToDeg(euler.z);
-    orientation.p = THREE.MathUtils.radToDeg(euler.x);
-    orientation.y = THREE.MathUtils.radToDeg(euler.y);
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(this.renderer.domElement);
 
-    this.calculatePhysics();
-    // ...
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.dampingFactor = 0.05;
+        this.controls.minDistance = 5;
+        this.controls.maxDistance = 100;
+
+        this.controls.mouseButtons = {
+            LEFT: THREE.MOUSE.PAN,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.ROTATE
+        };
+
+        this.renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
+    createPropellerSystem(color, dir) {
+        const group = new THREE.Group();
+        const bladeHigh = new THREE.Mesh(
+            new THREE.BoxGeometry(9, 0.15, 1),
+            new THREE.MeshPhongMaterial({ color: 0x111111 })
+        );
+        group.add(bladeHigh);
+
+        const discGeom = new THREE.CylinderGeometry(4.5, 4.5, 0.05, 32);
+        const discMat = new THREE.MeshBasicMaterial({
+            color: color,
+            transparent: true,
+            opacity: 0.0,
+            side: THREE.DoubleSide
+        });
+        const disc = new THREE.Mesh(discGeom, discMat);
+        group.add(disc);
+
+        return { group, disc };
+    }
+
+    initScene() {
+        // Lights
+        const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+        this.scene.add(ambient);
+
+        const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+        sun.position.set(20, 50, 20);
+        sun.castShadow = true;
+        this.scene.add(sun);
+
+        const grid = new THREE.GridHelper(200, 100, 0xdddddd, 0xeeeeee);
+        this.scene.add(grid);
+
+        this.droneGroup = new THREE.Group();
+        this.scene.add(this.droneGroup);
+
+        const bodyMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.body, roughness: 0.6 });
+
+        // Frame
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(4, 1.2, 10), bodyMat);
+        plate.castShadow = true;
+        this.droneGroup.add(plate);
+
+        const batt = new THREE.Mesh(new THREE.BoxGeometry(3, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0xffaa00 }));
+        batt.position.y = 1.35;
+        batt.castShadow = true;
+        this.droneGroup.add(batt);
+
+        // Arms
+        const armMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.arm });
+        const arm1 = new THREE.Mesh(new THREE.BoxGeometry(19.8, 0.6, 1.0), armMat);
+        arm1.rotation.y = Math.PI / 4;
+        arm1.castShadow = true;
+        this.droneGroup.add(arm1);
+        const arm2 = new THREE.Mesh(new THREE.BoxGeometry(19.8, 0.6, 1.0), armMat);
+        arm2.rotation.y = -Math.PI / 4;
+        arm2.castShadow = true;
+        this.droneGroup.add(arm2);
+
+        // Motors
+        const d = 6.75;
+        const pos = [
+            { idx: 0, x: -d, z: -d, color: 0xffff00 },
+            { idx: 1, x: d, z: -d, color: 0xffff00 },
+            { idx: 2, x: -d, z: d, color: 0x00ffff },
+            { idx: 3, x: d, z: d, color: 0x00ffff }
+        ];
+
+        pos.forEach(p => {
+            const m = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 1.5, 24),
+                new THREE.MeshStandardMaterial({ color: CONFIG.colors.motor }));
+            m.position.set(p.x * 2, 0.5, p.z * 2);
+            m.castShadow = true;
+            this.droneGroup.add(m);
+
+            const sys = this.createPropellerSystem(p.color, 1);
+            sys.group.position.y = 0.8;
+            m.add(sys.group);
+
+            this.motorData[p.idx].mesh = sys.group;
+            this.motorData[p.idx].blurMesh = sys.disc;
+        });
+    }
+
+    initWebSocket() {
+        const connect = () => {
+            this.ws = new WebSocket(CONFIG.wsUrl);
+            this.ws.onopen = () => {
+                isConnected = true;
+                const el = document.getElementById('connection-status');
+                if (el) {
+                    el.textContent = 'Connected';
+                    el.className = 'status -connected';
+                }
+            };
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.quat) {
+                        // NEW Quaternion Mode
+                        // Firmware sends Madgwick (NED/Standard). Three.js is ENU.
+                        // Common Mapping: q.x = q.y, q.y = q.z, q.z = q.x for Y-Up?
+                        // Actually, Madgwick output is usually q0(w), q1(x), q2(y), q3(z).
+
+                        // Experimentally found nice mapping for hand-held IMU:
+                        const qRaw = new THREE.Quaternion(
+                            data.quat.x,
+                            data.quat.z,
+                            -data.quat.y,
+                            data.quat.w
+                        );
+
+                        droneQuaternion.copy(qRaw);
+                        quality = data.quality;
+
+                        // Update R info with quality
+                        const rEl = document.getElementById('val-r');
+                        if (rEl) rEl.textContent = "Q:" + quality.toFixed(2);
+                    }
+                    else if (data.r !== undefined) {
+                        // Fallback Old Mode (Euler)
+                        orientation.r = data.r ?? 0;
+                        orientation.p = data.p ?? 0;
+                        orientation.y = data.y ?? 0;
+
+                        const e = new THREE.Euler(
+                            THREE.MathUtils.degToRad(orientation.p),
+                            THREE.MathUtils.degToRad(orientation.y),
+                            THREE.MathUtils.degToRad(orientation.r),
+                            'YXZ'
+                        );
+                        droneQuaternion.setFromEuler(e);
+                    }
+                } catch (e) { }
+            };
+            this.ws.onclose = () => {
+                isConnected = false;
+                const el = document.getElementById('connection-status');
+                if (el) {
+                    el.textContent = 'Disconnected';
+                    el.className = 'status -disconnected';
+                }
+                this.resetMotors();
+                setTimeout(connect, 2000);
+            };
+        };
+        connect();
+    }
+
+    resetYaw() {
+        // We want the current Visual Yaw to become "Zero".
+        // Current Visual Quat = droneQuaternion.
+        // We need an offset rotation `yawCorrection` such that:
+        // Result = droneQuaternion * yawCorrection ? 
+        // Or cleaner: We rotate the rendering Group.
+
+        // 1. Get current Euler Yaw from the Drone Quaternion
+        const euler = new THREE.Euler().setFromQuaternion(droneQuaternion, 'YXZ');
+        // 2. Store internal offset to negate it
+        this.yawCorrection = -euler.y;
+    }
+
+    resetMotors() {
+        this.motorData.forEach(m => m.throttle = 0);
+        this.updateTelemetry();
+    }
+
+    calculatePhysics() {
+        if (!isConnected) {
+            this.resetMotors();
+            return;
+        }
+
+        // Get Euler from the FINAL VISUAL QUATERNION for control mixing
+        // (This ensures our resetting logic affects control output if desired, 
+        // OR we might want control to be absolute? Usually relative to "Forward" is best)
+
+        // Let's use the DroneGroup quaternion (which includes compensation)
+        const euler = new THREE.Euler().setFromQuaternion(this.droneGroup.quaternion, 'YXZ');
+
+        // Convert to Deg for mixing logic
+        const pDeg = THREE.MathUtils.radToDeg(euler.x);
+        const rDeg = THREE.MathUtils.radToDeg(euler.z);
+        // orientation object update for display
+        orientation.p = pDeg;
+        orientation.r = rDeg;
+        orientation.y = THREE.MathUtils.radToDeg(euler.y);
+
+        const P_GAIN = CONFIG.physics.pitchGain;
+        const R_GAIN = CONFIG.physics.rollGain;
+        const BASE = CONFIG.physics.hoverThrottle;
+
+        const pIn = clamp(pDeg / 30, -1, 1);
+        const rIn = clamp(rDeg / 30, -1, 1);
+
+        const mixP = pIn * P_GAIN * 20;
+        const mixR = rIn * R_GAIN * 20;
+
+        // FL (0)
+        this.motorData[0].throttle = BASE + mixP - mixR;
+        // FR (1)
+        this.motorData[1].throttle = BASE + mixP + mixR;
+        // BL (2)
+        this.motorData[2].throttle = BASE - mixP - mixR;
+        // BR (3)
+        this.motorData[3].throttle = BASE - mixP + mixR;
+
+        this.motorData.forEach(m => {
+            m.throttle = clamp(m.throttle, 0, 100);
+        });
+
+        this.updateTelemetry();
+    }
 
     updateTelemetry() {
-        // Update DOM
-        document.getElementById('val-r').textContent = orientation.r.toFixed(1);
-        document.getElementById('val-p').textContent = orientation.p.toFixed(1);
-        document.getElementById('val-y').textContent = orientation.y.toFixed(1);
+        // DOM Update
+        const pEl = document.getElementById('val-p');
+        const yEl = document.getElementById('val-y');
+        if (pEl) pEl.textContent = orientation.p.toFixed(1);
+        if (yEl) yEl.textContent = orientation.y.toFixed(1);
 
         this.motorData.forEach(m => {
             const bar = document.getElementById(`bar-${m.id.toLowerCase()}`);
@@ -143,8 +326,6 @@ animate() {
             if (bar && txt) {
                 bar.style.width = `${m.throttle}%`;
                 txt.textContent = `${Math.round(m.throttle)}%`;
-
-                // Color coding
                 bar.className = 'bar ' + (m.throttle > 75 ? 'high' : m.throttle > 40 ? 'med' : 'low');
             }
         });
@@ -152,43 +333,25 @@ animate() {
 
     animate() {
         requestAnimationFrame(this.animate.bind(this));
-
-        // Update Controls (damping)
         if (this.controls) this.controls.update();
 
-        // Update Orientation
-        const pitchRad = THREE.MathUtils.degToRad(orientation.p);
-        const yawRad = THREE.MathUtils.degToRad(orientation.y);
-        const rollRad = THREE.MathUtils.degToRad(orientation.r);
+        // 1. Raw Rotation from IMU
+        this.droneGroup.quaternion.copy(droneQuaternion);
 
-        // Smooth rotation?
-        this.droneGroup.rotation.order = 'YXZ';
-        // Simple lerp for smoothness
-        const k = 0.2;
-        this.droneGroup.rotation.x += (-pitchRad - this.droneGroup.rotation.x) * k;
-        this.droneGroup.rotation.y += ((yawRad - THREE.MathUtils.degToRad(yawOffset)) - this.droneGroup.rotation.y) * k;
-        this.droneGroup.rotation.z += (rollRad - this.droneGroup.rotation.z) * k;
+        // 2. Apply Yaw Correction (Y Rotation)
+        // We rotate on global Y or local Y via pre-multiply?
+        // Simplest: Rotate World Y.
+        this.droneGroup.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), this.yawCorrection || 0);
 
-        // Physics
+        // 3. Physics & Visuals
         this.calculatePhysics();
 
-        // Animation
         this.motorData.forEach(m => {
-            // RPM calculation
             const rpm = (m.throttle / 100) * CONFIG.physics.maxRpm;
-            // Rotation per frame (assume 60fps, 16ms)
-            const rot = (rpm * 6) * 0.016; // rough scalar
-
+            const rot = (rpm * 6) * 0.016;
             m.mesh.rotation.y += rot * m.dir;
-
-            // Motion Blur Opacity
-            // 0% throttle = 0 opacity, 100% throttle = 0.5 opacity
             const opacity = (m.throttle / 100) * 0.8;
-            if (m.blurMesh) {
-                m.blurMesh.material.opacity = opacity;
-                // m.mesh.children[0].visible = (opacity < 0.8); // Hide solid blade at max speed?
-                // Visual trick: Keep blade visible but transparency creates the "disk" effect look.
-            }
+            if (m.blurMesh) m.blurMesh.material.opacity = opacity;
         });
 
         this.renderer.render(this.scene, this.camera);

@@ -87,7 +87,6 @@ class BLEBridge:
 
             def notification_handler(sender: BleakGATTCharacteristic, data: bytearray):
                 try:
-                try:
                     # Handle binary data (32 bytes -> 8 floats)
                     # Payload: [q0, q1, q2, q3, quality, bx, by, bz]
                     if len(data) == 32:
