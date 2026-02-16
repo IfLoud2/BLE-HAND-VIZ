@@ -4,175 +4,188 @@
 #include <math.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
-#include "Madgwick.h" // Local Advanced Filter
 
 // ==========================================
 // CONFIGURATION
 // ==========================================
 
-// BLE UUIDs (Legacy/Simple - Known Working)
+// Service & Characteristic UUIDs (Generic Serial)
 BLEService imuService("1101");
-BLECharacteristic imuChar("2101", BLERead | BLENotify, 24); // 6 floats x 4 bytes
+BLECharacteristic imuChar("2101", BLERead | BLENotify, 36); // 9 floats * 4 bytes = 36 bytes
 
-// IMU 1: LSM6DS3 (Internal)
-LSM6DS3 imuLSM(I2C_MODE, 0x6A);
+// IMU 1: LSM6DS3 (Built-in)
+LSM6DS3 myIMU(I2C_MODE, 0x6A);
 
-// IMU 2: LIS3DH (External - The "Improvement")
+// IMU 2: LIS3DH (External) - FUSION LOGGING ONLY
 Adafruit_LIS3DH imuLIS = Adafruit_LIS3DH();
 bool hasLIS = false;
 
-// Filter & Fusion Settings
-Madgwick filter;
-const float SAMPLE_RATE = 60.0f; 
-const float ALPHA_FUSION = 0.5f; // Weight for dual accel averaging
+// Filter Constants
+const float alpha = 0.98f;         // Complementary filter weight
+const float G_NORM_TARGET = 1.0f;  // Expected gravity norm (g)
+const float EPS_A = 0.03f;         // Accel norm tolerance for stationary detection
+const float EPS_W = 0.8f;          // Gyro norm tolerance (deg/s)
+const float BETA = 0.01f;          // Bias learning rate
+const float GZ_DEADBAND = 0.6f;    // Yaw deadband (deg/s)
 
-// Pin for Yaw Reset
+// Pin for Yaw Reset (Optional)
 #define YAW_RESET_PIN 0
 
-// State
-float qualityMetric = 0.0f;
-float biasX = 0, biasY = 0, biasZ = 0;
+// ==========================================
+// GLOBAL VARIABLES
+// ==========================================
+
+// Orientation State
+float roll  = 0.0f;
+float pitch = 0.0f;
+float yaw   = 0.0f;
+
+// Gyro Z Bias
+float bz = 0.0f;
+
+// Timing
 uint32_t lastUs = 0;
-uint32_t lastSendMs = 0;
 
 // ==========================================
 // SETUP
 // ==========================================
+
+void calibrateBiasZ() {
+  const int N = 600; // ~3s
+  float sum = 0.0f;
+  Serial.println("Calibrating Gyro Z... Keep still.");
+  for (int i = 0; i < N; i++) {
+    sum += myIMU.readFloatGyroZ();
+    delay(5);
+  }
+  bz = sum / N;
+  Serial.print("Bias Z encoded: ");
+  Serial.println(bz);
+}
 
 void setup() {
   Serial.begin(115200);
   pinMode(YAW_RESET_PIN, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
 
-  // 1. Init Main IMU
-  if (imuLSM.begin() != 0) {
-    Serial.println("LSM Error");
+  // 1. Init IMU 1
+  if (myIMU.begin() != 0) {
+    Serial.println("IMU Error!");
     while(1);
   }
 
-  // 2. Init Secondary IMU (Improvement)
+  // 2. Init IMU 2 (LIS3DH)
   if (imuLIS.begin(0x18)) {
     Serial.println("LIS3DH Found!");
     imuLIS.setRange(LIS3DH_RANGE_4_G);
     hasLIS = true;
   } else {
-    Serial.println("LIS3DH Not Found (Single IMU Mode)");
+    Serial.println("LIS3DH Not Found!");
   }
 
-  // 3. Calibration (Static)
-  Serial.println("Calibrating Gyro... KEEP STILL");
-  float sumX=0, sumY=0, sumZ=0;
-  int N = 500;
-  for(int i=0; i<N; i++) {
-     sumX += imuLSM.readFloatGyroX();
-     sumY += imuLSM.readFloatGyroY();
-     sumZ += imuLSM.readFloatGyroZ();
-     delay(5);
-  }
-  biasX = sumX / N;
-  biasY = sumY / N;
-  biasZ = sumZ / N;
-  Serial.println("Calibration Done.");
+  // 3. Calibrate
+  calibrateBiasZ();
+  yaw = 0.0f;
+  lastUs = micros();
 
-  filter.begin(SAMPLE_RATE);
-
-  // 4. BLE Setup (Legacy Name/UUIDs)
+  // 4. Init BLE
   if (!BLE.begin()) {
-    Serial.println("BLE Error");
+    Serial.println("BLE Error!");
     while(1);
   }
+
   BLE.setLocalName("XIAO_IMU");
   BLE.setAdvertisedService(imuService);
   imuService.addCharacteristic(imuChar);
   BLE.addService(imuService);
   BLE.advertise();
-  
-  Serial.println("BLE Ready. Waiting...");
-  lastUs = micros();
+
+  Serial.println("BLE Active. Waiting for connections...");
 }
 
 // ==========================================
-// MAIN LOOP
+// LOOP
 // ==========================================
 
 void loop() {
-  // --- DT Control ---
+  BLEDevice central = BLE.central();
+  
+  // --- 1. Time Delta ---
   uint32_t nowUs = micros();
   float dt = (nowUs - lastUs) * 1e-6f;
-  
-  // Enforce consistent sample rate for Madgwick
-  if (dt < (1.0f / SAMPLE_RATE)) return;
   lastUs = nowUs;
 
-  // --- 1. Read Raw Sensors ---
-  float ax1 = imuLSM.readFloatAccelX();
-  float ay1 = imuLSM.readFloatAccelY();
-  float az1 = imuLSM.readFloatAccelZ();
-  float gx = imuLSM.readFloatGyroX() - biasX;
-  float gy = imuLSM.readFloatGyroY() - biasY;
-  float gz = imuLSM.readFloatGyroZ() - biasZ;
-
-  float ax_f = ax1;
-  float ay_f = ay1;
-  float az_f = az1;
-
-  // --- 2. Dual Fusion (Improvement) ---
-  if (hasLIS) {
-    sensors_event_t event; 
-    imuLIS.getEvent(&event);
-    float ax2 = event.acceleration.x / 9.81f; 
-    float ay2 = event.acceleration.y / 9.81f;
-    float az2 = event.acceleration.z / 9.81f;
-    
-    // Simple Fusion (Average)
-    // Could add alignment matrix here if needed
-    ax_f = (ax1 + ax2) * 0.5f;
-    ay_f = (ay1 + ay2) * 0.5f;
-    az_f = (az1 + az2) * 0.5f;
+  // Safety guard for dt
+  if (dt <= 0.0f || dt > 0.1f) {
+    return;
   }
 
-  // --- 3. Dynamic Filtering (Improvement) ---
-  float acc_mag = sqrt(ax_f*ax_f + ay_f*ay_f + az_f*az_f);
-  qualityMetric = fabs(acc_mag - 1.0f);
+  // --- 2. Read Sensors (IMU 1 Main Control) ---
+  float ax = myIMU.readFloatAccelX();
+  float ay = myIMU.readFloatAccelY();
+  float az = myIMU.readFloatAccelZ();
+  float gx = myIMU.readFloatGyroX();
+  float gy = myIMU.readFloatGyroY();
+  float gz = myIMU.readFloatGyroZ();
 
-  // Adjust Beta based on stability
-  if (qualityMetric < 0.05f) filter.beta = 0.5f; // Stable -> Trust Accel
-  else if (qualityMetric > 0.3f) filter.beta = 0.02f; // Vibration -> Trust Gyro
-  else filter.beta = 0.1f;
+  // --- 3. Compute Roll / Pitch (Accel fallback) ---
+  float roll_acc  = atan2f(ay, az) * RAD_TO_DEG;
+  float pitch_acc = atan2f(-ax, sqrtf(ay * ay + az * az)) * RAD_TO_DEG; 
 
-  // Update Madgwick
-  filter.updateIMU(gx, gy, gz, ax_f, ay_f, az_f);
+  // --- 4. Complementary Filter (UNCHANGED) ---
+  roll  = alpha * (roll  + gx * dt) + (1.0f - alpha) * roll_acc;
+  pitch = alpha * (pitch + gy * dt) + (1.0f - alpha) * pitch_acc;
 
-  // --- 4. Yaw Reset Logic ---
+  // --- 5. Stationary Detection & Bias Update ---
+  float a_norm = sqrtf(ax * ax + ay * ay + az * az);
+  float w_norm = sqrtf(gx * gx + gy * gy + gz * gz);
+  bool stationary = (fabsf(a_norm - G_NORM_TARGET) < EPS_A) && (w_norm < EPS_W);
+
+  if (stationary) {
+    bz = (1.0f - BETA) * bz + BETA * gz;
+  }
+
+  // --- 6. Yaw Integration ---
+  float gz_corr = gz - bz;
+  if (fabsf(gz_corr) < GZ_DEADBAND) {
+    gz_corr = 0.0f;
+  }
+  yaw += gz_corr * dt;
+
+  // --- 7. Reset Handling ---
   if (digitalRead(YAW_RESET_PIN) == LOW) {
-    // Resetting Madgwick is hard without re-init. 
-    // Usually handled client-side, but we can force it?
-    // For now, let's keep client-side reset priority.
+    yaw = 0.0f;
   }
 
-  // --- 5. BLE Transmit (20Hz - Legacy Rate) ---
-  // To match user's "Improve existing" request, we send Euler Angles.
-  // Madgwick provides robust Euler angles (gimbal lock free internally).
-  
-  if (millis() - lastSendMs >= 30) { // ~33Hz (Faster than 20, slower than 60)
+  // --- 8. BLE Transmission (Send at restricted rate, e.g. 20Hz) ---
+  static uint32_t lastSendMs = 0;
+  if (millis() - lastSendMs > 50) { // 20Hz
     lastSendMs = millis();
-    BLEDevice central = BLE.central();
     
-    if (central && central.connected()) {
-      float r = filter.getRoll();
-      float p = filter.getPitch();
-      float y = filter.getYaw();
+    // Read IMU 2 (LIS3DH) for Logging
+    float ax2=0, ay2=0, az2=0;
+    if (hasLIS) {
+       sensors_event_t event; 
+       imuLIS.getEvent(&event);
+       ax2 = event.acceleration.x / 9.81f; 
+       ay2 = event.acceleration.y / 9.81f;
+       az2 = event.acceleration.z / 9.81f;
+    }
 
-      // Payload: [Roll, Pitch, Yaw, Ax, Ay, Az] (24 bytes)
-      float data[6];
-      data[0] = r;
-      data[1] = p;
-      data[2] = y;
-      data[3] = ax_f;
-      data[4] = ay_f;
-      data[5] = az_f;
+    if (central && central.connected()) {
+      // Pack Data: [Roll, Pitch, Yaw, Ax1, Ay1, Az1, Ax2, Ay2, Az2] (36 bytes)
+      float data[9];
+      data[0] = roll;
+      data[1] = pitch;
+      data[2] = yaw;
+      data[3] = ax;  // Ax1
+      data[4] = ay;  // Ay1
+      data[5] = az;  // Az1
+      data[6] = ax2;
+      data[7] = ay2;
+      data[8] = az2;
       
-      imuChar.writeValue((byte*)data, 24);
+      imuChar.writeValue((byte*)data, 36);
     }
   }
 }
