@@ -1,58 +1,28 @@
-# BLE Hand Viz - Drone Control System
+# BLE-HAND-FUSION (Active Fusion Environment)
 
-![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Status Active](https://img.shields.io/badge/status-active-success)
+This directory contains the **Active Fusion** implementation of the drone control system. unlike the legacy version, this firmware actively fuses data from two accelerometers to reduce noise and improve stability.
 
-A professional fusion of **BLE Hand** (IMU Data Acquisition) and **Hand Viz** (Drone Simulation). This project allows real-time control of a simulated drone using a Seeed Studio XIAO nRF52840 Sense via Bluetooth Low Energy.
+## 🔬 Active Fusion Logic
 
-## Quick Start
+The core innovation in this version is the **Dual-IMU Averaging** combined with **ZUPT (Zero Velocity Update)**.
 
-### 1. Requirements
-*   **Node.js**: v14+
-*   **Python**: v3.10+
-*   **Hardware**: Seeed XIAO nRF52840 Sense (Flashed with `BLE_hand` firmware)
-
-### 2. Installation
-```bash
-git clone https://github.com/IfLoud2/BLE-HAND-VIZ.git
-cd BLE-HAND-VIZ
-npm install
-pip install -r python/requirements.txt
+### 1. Dual Accelerometer Fusion
+Instead of relying on a single noisy accelerometer, we read data from both the internal `LSM6DS3` and the external `LIS3DH`.
+```cpp
+// Firmware/XIAO_BLE_FUSION.ino
+float ax_f = (ax1 + ax2) * 0.5f;
+float ay_f = (ay1 + ay2) * 0.5f;
+float az_f = (az1 + az2) * 0.5f;
 ```
+This fused vector `(ax_f, ay_f, az_f)` has a theoretic noise variance reduction of **50%**, providing a much cleaner gravity reference for the Complementary Filter.
 
-### 3. Usage
-**One-Click Launch (Windows):**
-Double-click `start_ble_viz.bat`.
+### 2. Enhanced ZUPT
+The Zero Velocity Update algorithm detects when the drone is stationary to recalibrate the gyroscope bias. By using the cleaner **Fused Acceleration** to detect the "Stationary" state, we eliminate false negatives caused by sensor noise, making the drift correction significantly more reliable.
 
-This will automatically start:
-1.  **Hub Server** (Port 8082): The central message broker.
-2.  **Web Interface** (Port 8000): The 3D Drone Simulator.
-3.  **BLE Bridge** (Python): Connects to the XIAO and forwards data to the Hub.
+## 📚 References
+For a detailed list of the research papers and articles that influenced this implementation (including ZUPT validity and Complementary Filter analysis), please see [REFERENCES.md](./REFERENCES.md).
 
-**Manual Launch:**
-```bash
-# Terminal 1: Broker
-node hub_server.js
-
-# Terminal 2: Web
-python -m http.server 8000
-
-# Terminal 3: BLE Bridge
-python python/ble_bridge.py --port 8082
-```
-
-## Features
-*   **Hybrid Architecture**: Python backend for BLE + Node.js/Browser for Visualization.
-*   **Real-time Logic**: Low-latency UDP-like forwarding via WebSockets.
-*   **Physics Engine**: Custom 3D drone physics responding to hand roll/pitch/yaw.
-*   **Engineering Viz**: High-contrast, clean UI for technical validation.
-
-## Architecture
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design, data flow, and physics mixing algorithms.
-
-## Contributing
-Please adhere to the rigorous coding standards defined in the project guidelines. 
-*   **Commits**: Conventional Commits (feat, fix, refactor).
-*   **Documentation**: Update CHANGELOG.md for every PR.
-
-## License
-MIT
+## 🚀 How to Run
+1.  **Firmware**: Open `firmware/XIAO_BLE_FUSION/XIAO_BLE_FUSION.ino` and flash it to the XIAO nRF52840.
+2.  **Bridge**: Run `python fusion_bridge.py` to start the BLE receiver with CSV logging.
+3.  **Visualization**: Open `index.html` (or run the legacy `start_ble_viz.bat` if compatible).
