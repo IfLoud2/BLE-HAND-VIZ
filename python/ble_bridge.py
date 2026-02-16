@@ -1,9 +1,12 @@
-
 import asyncio
 import argparse
 import logging
 import json
 import sys
+import os
+import csv
+import struct
+from datetime import datetime
 from typing import Optional
 
 from bleak import BleakClient, BleakScanner
@@ -11,7 +14,6 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.exc import BleakError
 
 import websockets
-import struct
 from websockets.client import connect as ws_connect
 
 # Configure logging
@@ -24,11 +26,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Constants for Nordic UART Service
-# The XIAO documentation/User request confirms these UUIDs
-# Standard Nordic UART Service
-UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+# Constants (Legacy - Known Working)
+SERVICE_UUID = "1101"
+CHARACTERISTIC_UUID = "2101"
 
 class BLEBridge:
     def __init__(self, target_name: str, host: str, port: int, protocol: str, debug: bool):
@@ -40,6 +40,19 @@ class BLEBridge:
         self.client: Optional[BleakClient] = None
         self.ws_connection = None
         self.running = True
+        
+        # Logging Setup
+        self.log_dir = "logs"
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = os.path.join(self.log_dir, f"imu_log_{timestamp}.csv")
+        self.csv_file = open(self.log_file, 'w', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        # Header: Time, Roll, Pitch, Yaw, Ax1, Ay1, Az1, Ax2, Ay2, Az2
+        self.csv_writer.writerow(["Timestamp", "Roll", "Pitch", "Yaw", "Ax1", "Ay1", "Az1", "Ax2", "Ay2", "Az2"])
+        logger.info(f"Logging IMU data to: {self.log_file}")
 
     async def run(self):
         """Main loop with reconnection logic."""
@@ -71,8 +84,6 @@ class BLEBridge:
                 logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
                 await asyncio.sleep(5)
 
-
-
     async def ble_loop(self):
         """Inner loop for BLE connection and handling."""
         while self.running:
@@ -87,40 +98,42 @@ class BLEBridge:
 
             def notification_handler(sender: BleakGATTCharacteristic, data: bytearray):
                 try:
-                    # Handle binary data (32 bytes -> 8 floats)
-                    # Payload: [q0, q1, q2, q3, quality, bx, by, bz]
-                    if len(data) == 32:
-                        v = struct.unpack('<8f', data)
+                    payload = None
+                    
+                    # A. Dual IMU Logging Payload (36 bytes)
+                    if len(data) == 36:
+                        v = struct.unpack('<9f', data)
+                        # v = [r, p, y, ax1, ay1, az1, ax2, ay2, az2]
+                        
+                        # 1. Log to CSV
+                        t_now = datetime.now().strftime("%H:%M:%S.%f")
+                        self.csv_writer.writerow([t_now, *v])
+                        self.csv_file.flush() # Ensure write
+                        
+                        # 2. Prepare JSON for UI (Keep same format as before)
+                        # UI expects r, p, y, ax, ay, az. We map IMU1 to these.
+                        payload = {
+                            "r": v[0], "p": v[1], "y": v[2],
+                            "ax": v[3], "ay": v[4], "az": v[5]
+                        }
+
+                    # B. Standard Legacy Payload (24 bytes)
+                    elif len(data) == 24:
+                        v = struct.unpack('<6f', data)
+                        # v = [r, p, y, ax, ay, az]
+                        
+                        # Log partial data (pad zeros for IMU2)
+                        t_now = datetime.now().strftime("%H:%M:%S.%f")
+                        self.csv_writer.writerow([t_now, *v, 0, 0, 0])
                         
                         payload = {
-                            "quat": {
-                                "w": v[0], 
-                                "x": v[1], 
-                                "y": v[2], 
-                                "z": v[3]
-                            },
-                            "quality": v[4],
-                            "bias": {
-                                "x": v[5], 
-                                "y": v[6], 
-                                "z": v[7]
-                            }
+                            "r": v[0], "p": v[1], "y": v[2],
+                            "ax": v[3], "ay": v[4], "az": v[5]
                         }
-                        
-                        if self.debug:
-                            # Log occassionally or if needed
-                            pass # logger.info(f"RX: {payload}")
-                        
+
+                    if payload:
                         json_data = json.dumps(payload)
                         asyncio.create_task(self.forward_data(json_data))
-                    
-                    elif len(data) == 24:
-                         # Backward compatibility? Or just ignore.
-                         logger.warning("Received 24 bytes (Old Firmware?)")
-
-                    else:
-                        # Fallback to text
-                        text_data = data.decode('utf-8').strip()
 
                 except Exception as ex:
                     if self.debug:
@@ -132,10 +145,14 @@ class BLEBridge:
             try:
                 async with BleakClient(device, disconnected_callback=disconnect_callback) as client:
                     self.client = client
+                    if not client.is_connected:
+                        logger.error("Failed to connect to BLE device.")
+                        continue
+                    
                     logger.info(f"Connected to {device.name}")
                     
-                    await client.start_notify(UART_TX_CHAR_UUID, notification_handler)
-                    logger.info("Subscribed to UART TX characteristic.")
+                    await client.start_notify(CHARACTERISTIC_UUID, notification_handler)
+                    logger.info(f"Subscribed to characteristic {CHARACTERISTIC_UUID}.")
                     
                     # Keep the connection alive until disconnected or error
                     while client.is_connected and self.ws_connection and not self.ws_connection.closed:
