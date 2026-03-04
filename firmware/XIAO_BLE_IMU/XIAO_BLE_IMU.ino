@@ -65,6 +65,7 @@ void setup() {
 
   // 2. Initialize filter
   filter.begin(sampleRate);
+  filter.beta = 1.0f; // INCREASED GAIN: Default is 0.1f. 1.0f forces much faster convergence.
   lastUpdate = micros();
 
   // 3. Init BLE
@@ -113,7 +114,7 @@ void loop() {
     float mz = mag_event.magnetic.z - 25.875f;
 
     // --- 4. Madgwick 9-DOF Fusion ---
-    filter.update(gx, gy, gz, ax, ay, az, mx, my, mz);
+   filter.update(gx, gy, gz, ax, ay, az, -mx, my, -mz);
 
     roll  = filter.getRoll();
     pitch = filter.getPitch();
