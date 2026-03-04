@@ -2,7 +2,6 @@
 #include <LSM6DS3.h>
 #include <Wire.h>
 #include <math.h>
-#include <Adafruit_VL53L0X.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_Sensor.h>
 #include <MadgwickAHRS.h>
@@ -13,11 +12,10 @@
 
 // Service & Characteristic UUIDs (Generic Serial)
 BLEService imuService("1101");
-BLECharacteristic imuChar("2101", BLERead | BLENotify, 28); // 7 floats * 4 bytes = 28 bytes
+BLECharacteristic imuChar("2101", BLERead | BLENotify, 24); // 6 floats * 4 bytes = 24 bytes
 
 // Sensor Settings
 LSM6DS3 myIMU(I2C_MODE, 0x6A);
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 Adafruit_LIS3MDL mag;
 
 // Filter Settings
@@ -55,12 +53,7 @@ void setup() {
     while(1);
   }
 
-  // 1.5 Init ToF
-  if (!lox.begin()) {
-    Serial.println(F("Failed to boot VL53L0X"));
-  }
-
-  // 1.8 Init Magnetometer
+  // 2. Init Magnetometer
   if (!mag.begin_I2C(0x1C)) { 
     Serial.println("Erreur: LIS3MDL non detecte !");
   } else {
@@ -137,27 +130,16 @@ void loop() {
     lastSendMs = millis();
     
     if (central && central.connected()) {
-      // Read ToF
-      VL53L0X_RangingMeasurementData_t measure;
-      lox.rangingTest(&measure, false); 
-      float distM = 0.0f;
-      if (measure.RangeStatus != 4) {
-          distM = measure.RangeMilliMeter / 1000.0f;
-      } else {
-          distM = -1.0f; // Error/Out of range
-      }
-
-      // Pack Data: [Roll, Pitch, Yaw, Ax, Ay, Az, Dist] (28 bytes)
-      float data[7];
+      // Pack Data: [Roll, Pitch, Yaw, Ax, Ay, Az] (24 bytes)
+      float data[6];
       data[0] = roll;
       data[1] = pitch;
       data[2] = yaw;
       data[3] = ax;
       data[4] = ay;
       data[5] = az;
-      data[6] = distM;
       
-      imuChar.writeValue((byte*)data, 28);
+      imuChar.writeValue((byte*)data, 24);
     }
   }
 }
