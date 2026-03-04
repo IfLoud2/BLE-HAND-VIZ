@@ -221,8 +221,20 @@ class App {
                         const accMag = Math.sqrt(data.ax * data.ax + data.ay * data.ay + data.az * data.az);
                         quality = Math.abs(accMag - 1.0);
 
-                        const rEl = document.getElementById('val-r');
-                        if (rEl) rEl.textContent = "Q:" + quality.toFixed(2);
+                        // We removed the Quality overwrite of val-r here to restore Roll display.
+                    }
+
+                    if (data.d !== undefined) {
+                        const dEl = document.getElementById('val-d');
+                        if (dEl) dEl.textContent = data.d.toFixed(2);
+
+                        // Move Drone based on Altitude
+                        // Scale: 1m = 20 units in Three.js world?
+                        // Base height is ~1.5 units (legs).
+                        // Let's create a smooth target Y.
+                        const targetY = (data.d * 20) + 2;
+                        // Smooth transition could be done in animate(), but direct set for now
+                        this.droneGroup.position.y = targetY;
                     }
                 } catch (e) { }
             };
@@ -307,8 +319,10 @@ class App {
 
     updateTelemetry() {
         // DOM Update
+        const rEl = document.getElementById('val-r');
         const pEl = document.getElementById('val-p');
         const yEl = document.getElementById('val-y');
+        if (rEl) rEl.textContent = orientation.r.toFixed(1);
         if (pEl) pEl.textContent = orientation.p.toFixed(1);
         if (yEl) yEl.textContent = orientation.y.toFixed(1);
 

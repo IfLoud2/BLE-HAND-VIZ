@@ -65,7 +65,7 @@ void setup() {
 
   // 2. Initialize filter
   filter.begin(sampleRate);
-  filter.setBeta(1.0f); // INCREASED GAIN: Uses new public setter to bypass private restriction.
+  filter.setBeta(0.041f); // STABLE GAIN: 0.041 is a standard sweet spot for Madgwick with Magnetometer.
   lastUpdate = micros();
 
   // 3. Init BLE
