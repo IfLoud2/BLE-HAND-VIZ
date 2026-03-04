@@ -104,12 +104,22 @@ void loop() {
   float gy = myIMU.readFloatGyroY();
   float gz = myIMU.readFloatGyroZ();
 
-  // --- 3. Read Magnetometer ---
+  // --- 3. Read Magnetometer & Apply Hard-Iron Calibration ---
   sensors_event_t mag_event;
   mag.getEvent(&mag_event);
-  float mx = mag_event.magnetic.x;
-  float my = mag_event.magnetic.y;
-  float mz = mag_event.magnetic.z;
+  
+  // Raw Data
+  float mx_raw = mag_event.magnetic.x;
+  float my_raw = mag_event.magnetic.y;
+  float mz_raw = mag_event.magnetic.z;
+
+  // Offsets (Calculated from Min/Max: Offset = (Max + Min) / 2)
+  // X: Max(95.57), Min(37.72) -> Offset = 66.645
+  // Y: Max(30.63), Min(-24.80) -> Offset = 2.915
+  // Z: Max(56.28), Min(-4.53) -> Offset = 25.875
+  float mx = mx_raw - 66.645f;
+  float my = my_raw - 2.915f;
+  float mz = mz_raw - 25.875f;
 
   // --- 4. Madgwick 9-DOF Fusion ---
   // If the sensor spins backwards, axes might need to be inverted: e.g., mx, my, mz -> -my, -mx, mz
