@@ -3,10 +3,7 @@ import argparse
 import logging
 import json
 import sys
-import os
-import csv
 import struct
-from datetime import datetime
 from typing import Optional
 
 from bleak import BleakClient, BleakScanner
@@ -40,19 +37,6 @@ class BLEBridge:
         self.client: Optional[BleakClient] = None
         self.ws_connection = None
         self.running = True
-        
-        # Logging Setup
-        self.log_dir = "logs"
-        if not os.path.exists(self.log_dir):
-            os.makedirs(self.log_dir)
-            
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = os.path.join(self.log_dir, f"imu_log_{timestamp}.csv")
-        self.csv_file = open(self.log_file, 'w', newline='')
-        self.csv_writer = csv.writer(self.csv_file)
-        # Header: Time, Roll, Pitch, Yaw, Ax1, Ay1, Az1, Ax2, Ay2, Az2
-        self.csv_writer.writerow(["Timestamp", "Roll", "Pitch", "Yaw", "Ax1", "Ay1", "Az1", "Ax2", "Ay2", "Az2"])
-        logger.info(f"Logging IMU data to: {self.log_file}")
 
     async def run(self):
         """Main loop with reconnection logic."""
@@ -60,20 +44,15 @@ class BLEBridge:
         
         while self.running:
             try:
-                # 1. Connect to Network Destination first (optional, but good to have ready)
-                # For this implementation, we connect to network first.
+                # 1. Connect to Network Destination first
                 if self.protocol == 'ws':
                     uri = f"ws://{self.host}:{self.port}"
                     logger.info(f"Connecting to WebSocket: {uri}...")
-                    # We use a context manager for the connection, but we need it to persist across BLE reconnects?
-                    # Actually, if BLE drops, we keep WS open. If WS drops, we might want to reconnect WS.
-                    # Let's simple handling: Connect WS, then loop BLE.
                     async with ws_connect(uri) as websocket:
                         self.ws_connection = websocket
                         logger.info("WebSocket connected.")
                         await self.ble_loop()
                 elif self.protocol == 'tcp':
-                    # TCP implementation placeholder or basic socket
                     logger.warning("TCP not fully implemented in this asyncio loop safely, falling back to dry run for network.")
                     await self.ble_loop()
                 
@@ -98,33 +77,10 @@ class BLEBridge:
 
             def notification_handler(sender: BleakGATTCharacteristic, data: bytearray):
                 try:
-                    payload = None
-                    
-                    # A. Dual IMU Logging Payload (36 bytes)
-                    if len(data) == 36:
-                        v = struct.unpack('<9f', data)
-                        # v = [r, p, y, ax1, ay1, az1, ax2, ay2, az2]
-                        
-                        # 1. Log to CSV
-                        t_now = datetime.now().strftime("%H:%M:%S.%f")
-                        self.csv_writer.writerow([t_now, *v])
-                        self.csv_file.flush() # Ensure write
-                        
-                        # 2. Prepare JSON for UI (Keep same format as before)
-                        # UI expects r, p, y, ax, ay, az. We map IMU1 to these.
-                        payload = {
-                            "r": v[0], "p": v[1], "y": v[2],
-                            "ax": v[3], "ay": v[4], "az": v[5]
-                        }
-
-                    # B. Standard Legacy Payload (24 bytes)
-                    elif len(data) == 24:
-                        v = struct.unpack('<6f', data)
-                        # v = [r, p, y, ax, ay, az]
-                        
-                        # Log partial data (pad zeros for IMU2)
-                        t_now = datetime.now().strftime("%H:%M:%S.%f")
-                        self.csv_writer.writerow([t_now, *v, 0, 0, 0])
+                    # Handle binary data (24 bytes -> 6 floats)
+                    # Payload: [r, p, y, ax, ay, az]
+                    if len(data) >= 24:
+                        v = struct.unpack('<6f', data[:24])
                         
                         payload = {
                             "r": v[0], "p": v[1], "y": v[2],
@@ -173,12 +129,10 @@ class BLEBridge:
         if self.ws_connection:
             try:
                 await self.ws_connection.send(data)
-                # logger.debug(f"Sent: {data}")
             except websockets.exceptions.ConnectionClosed:
                 logger.error("WebSocket connection closed during send.")
-                # Logic to trigger reconnection in main loop?
         elif self.protocol == 'tcp':
-            pass # TODO: TCP
+            pass 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BLE to WebSocket/TCP Bridge for XIAO nRF52840")
