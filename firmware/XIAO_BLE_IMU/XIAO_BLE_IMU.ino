@@ -90,64 +90,54 @@ void setup() {
 void loop() {
   BLEDevice central = BLE.central();
   
-  // --- 1. Time Delta ---
+  // --- 1. Filter Execution (50 Hz) ---
   uint32_t nowUs = micros();
-  // Execute precision loop at sampleRate (50Hz = 20000us)
-  if (nowUs - lastUpdate < (1000000 / sampleRate)) return;
-  lastUpdate = nowUs;
+  if (nowUs - lastUpdate >= (1000000 / sampleRate)) {
+    lastUpdate = nowUs;
 
-  // --- 2. Read Accelerometer & Gyro ---
-  float ax = myIMU.readFloatAccelX();
-  float ay = myIMU.readFloatAccelY();
-  float az = myIMU.readFloatAccelZ();
-  float gx = myIMU.readFloatGyroX();
-  float gy = myIMU.readFloatGyroY();
-  float gz = myIMU.readFloatGyroZ();
+    // --- 2. Read Accelerometer & Gyro ---
+    float ax = myIMU.readFloatAccelX();
+    float ay = myIMU.readFloatAccelY();
+    float az = myIMU.readFloatAccelZ();
+    float gx = myIMU.readFloatGyroX();
+    float gy = myIMU.readFloatGyroY();
+    float gz = myIMU.readFloatGyroZ();
 
-  // --- 3. Read Magnetometer & Apply Hard-Iron Calibration ---
-  sensors_event_t mag_event;
-  mag.getEvent(&mag_event);
-  
-  // Raw Data
-  float mx_raw = mag_event.magnetic.x;
-  float my_raw = mag_event.magnetic.y;
-  float mz_raw = mag_event.magnetic.z;
+    // --- 3. Read Magnetometer & Apply Hard-Iron Calibration ---
+    sensors_event_t mag_event;
+    mag.getEvent(&mag_event);
+    
+    // Raw Data & Offsets
+    float mx = mag_event.magnetic.x - 66.645f;
+    float my = mag_event.magnetic.y - 2.915f;
+    float mz = mag_event.magnetic.z - 25.875f;
 
-  // Offsets (Calculated from Min/Max: Offset = (Max + Min) / 2)
-  // X: Max(95.57), Min(37.72) -> Offset = 66.645
-  // Y: Max(30.63), Min(-24.80) -> Offset = 2.915
-  // Z: Max(56.28), Min(-4.53) -> Offset = 25.875
-  float mx = mx_raw - 66.645f;
-  float my = my_raw - 2.915f;
-  float mz = mz_raw - 25.875f;
+    // --- 4. Madgwick 9-DOF Fusion ---
+    filter.update(gx, gy, gz, ax, ay, az, mx, my, mz);
 
-  // --- 4. Madgwick 9-DOF Fusion ---
-  // If the sensor spins backwards, axes might need to be inverted: e.g., mx, my, mz -> -my, -mx, mz
-  filter.update(gx, gy, gz, ax, ay, az, mx, my, mz);
+    roll  = filter.getRoll();
+    pitch = filter.getPitch();
+    
+    // --- 5. Yaw Reset Handling ---
+    if (digitalRead(YAW_RESET_PIN) == LOW) {
+      yawOffset = filter.getYaw();
+    }
+    yaw = filter.getYaw() - yawOffset;
+  } // End of 50Hz Block
 
-  roll  = filter.getRoll();
-  pitch = filter.getPitch();
-  
-  // --- 5. Yaw Reset Handling ---
-  if (digitalRead(YAW_RESET_PIN) == LOW) {
-    yawOffset = filter.getYaw();
-  }
-  yaw = filter.getYaw() - yawOffset; // Apply offset
-
-  // --- 6. BLE Transmission (Send at restricted rate, e.g. 20Hz) ---
+  // --- 6. BLE Transmission & Stack Handling (Send at ~20Hz) ---
   static uint32_t lastSendMs = 0;
-  if (millis() - lastSendMs > 50) { // 20Hz
+  if (millis() - lastSendMs > 50) { 
     lastSendMs = millis();
     
     if (central && central.connected()) {
-      // Pack Data: [Roll, Pitch, Yaw, Ax, Ay, Az] (24 bytes)
       float data[6];
       data[0] = roll;
       data[1] = pitch;
       data[2] = yaw;
-      data[3] = ax;
-      data[4] = ay;
-      data[5] = az;
+      data[3] = myIMU.readFloatAccelX(); // Send instantaneous G-force for visualizer
+      data[4] = myIMU.readFloatAccelY();
+      data[5] = myIMU.readFloatAccelZ();
       
       imuChar.writeValue((byte*)data, 24);
     }
