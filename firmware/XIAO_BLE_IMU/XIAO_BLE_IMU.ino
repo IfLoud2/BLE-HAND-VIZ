@@ -2,31 +2,27 @@
 #include <LSM6DS3.h>
 #include <Wire.h>
 #include <math.h>
-#include <Adafruit_LIS3DH.h>
+#include <Adafruit_VL53L0X.h>
+#include <Adafruit_LIS3MDL.h>
 #include <Adafruit_Sensor.h>
+#include <MadgwickAHRS.h>
 
 // ==========================================
-// CONFIGURATION
+// CONFIGURATION: MADGWICK 9-DOF STABLE
 // ==========================================
 
 // Service & Characteristic UUIDs (Generic Serial)
 BLEService imuService("1101");
-BLECharacteristic imuChar("2101", BLERead | BLENotify, 36); // 9 floats * 4 bytes = 36 bytes
+BLECharacteristic imuChar("2101", BLERead | BLENotify, 28); // 7 floats * 4 bytes = 28 bytes
 
-// IMU 1: LSM6DS3 (Built-in)
+// Sensor Settings
 LSM6DS3 myIMU(I2C_MODE, 0x6A);
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+Adafruit_LIS3MDL mag;
 
-// IMU 2: LIS3DH (External) - FUSION LOGGING ONLY
-Adafruit_LIS3DH imuLIS = Adafruit_LIS3DH();
-bool hasLIS = false;
-
-// Filter Constants
-const float alpha = 0.98f;         // Complementary filter weight
-const float G_NORM_TARGET = 1.0f;  // Expected gravity norm (g)
-const float EPS_A = 0.03f;         // Accel norm tolerance for stationary detection
-const float EPS_W = 0.8f;          // Gyro norm tolerance (deg/s)
-const float BETA = 0.01f;          // Bias learning rate
-const float GZ_DEADBAND = 0.6f;    // Yaw deadband (deg/s)
+// Filter Settings
+Madgwick filter;
+const float sampleRate = 50.0f; // 50 Hz
 
 // Pin for Yaw Reset (Optional)
 #define YAW_RESET_PIN 0
@@ -39,56 +35,46 @@ const float GZ_DEADBAND = 0.6f;    // Yaw deadband (deg/s)
 float roll  = 0.0f;
 float pitch = 0.0f;
 float yaw   = 0.0f;
-
-// Gyro Z Bias
-float bz = 0.0f;
+float yawOffset = 0.0f;
 
 // Timing
-uint32_t lastUs = 0;
+uint32_t lastUpdate = 0;
 
 // ==========================================
 // SETUP
 // ==========================================
-
-void calibrateBiasZ() {
-  const int N = 600; // ~3s
-  float sum = 0.0f;
-  Serial.println("Calibrating Gyro Z... Keep still.");
-  for (int i = 0; i < N; i++) {
-    sum += myIMU.readFloatGyroZ();
-    delay(5);
-  }
-  bz = sum / N;
-  Serial.print("Bias Z encoded: ");
-  Serial.println(bz);
-}
 
 void setup() {
   Serial.begin(115200);
   pinMode(YAW_RESET_PIN, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
 
-  // 1. Init IMU 1
+  // 1. Init IMU
   if (myIMU.begin() != 0) {
     Serial.println("IMU Error!");
     while(1);
   }
 
-  // 2. Init IMU 2 (LIS3DH)
-  if (imuLIS.begin(0x18)) {
-    Serial.println("LIS3DH Found!");
-    imuLIS.setRange(LIS3DH_RANGE_4_G);
-    hasLIS = true;
-  } else {
-    Serial.println("LIS3DH Not Found!");
+  // 1.5 Init ToF
+  if (!lox.begin()) {
+    Serial.println(F("Failed to boot VL53L0X"));
   }
 
-  // 3. Calibrate
-  calibrateBiasZ();
-  yaw = 0.0f;
-  lastUs = micros();
+  // 1.8 Init Magnetometer
+  if (!mag.begin_I2C(0x1C)) { 
+    Serial.println("Erreur: LIS3MDL non detecte !");
+  } else {
+    mag.setPerformanceMode(LIS3MDL_MEDIUMMODE);
+    mag.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+    mag.setDataRate(LIS3MDL_DATARATE_155_HZ);
+    mag.setRange(LIS3MDL_RANGE_4_GAUSS);
+  }
 
-  // 4. Init BLE
+  // 2. Initialize filter
+  filter.begin(sampleRate);
+  lastUpdate = micros();
+
+  // 3. Init BLE
   if (!BLE.begin()) {
     Serial.println("BLE Error!");
     while(1);
@@ -101,6 +87,7 @@ void setup() {
   BLE.advertise();
 
   Serial.println("BLE Active. Waiting for connections...");
+  delay(1000); // Let filter stabilize briefly
 }
 
 // ==========================================
@@ -112,15 +99,11 @@ void loop() {
   
   // --- 1. Time Delta ---
   uint32_t nowUs = micros();
-  float dt = (nowUs - lastUs) * 1e-6f;
-  lastUs = nowUs;
+  // Execute precision loop at sampleRate (50Hz = 20000us)
+  if (nowUs - lastUpdate < (1000000 / sampleRate)) return;
+  lastUpdate = nowUs;
 
-  // Safety guard for dt
-  if (dt <= 0.0f || dt > 0.1f) {
-    return;
-  }
-
-  // --- 2. Read Sensors (IMU 1 Main Control) ---
+  // --- 2. Read Accelerometer & Gyro ---
   float ax = myIMU.readFloatAccelX();
   float ay = myIMU.readFloatAccelY();
   float az = myIMU.readFloatAccelZ();
@@ -128,64 +111,53 @@ void loop() {
   float gy = myIMU.readFloatGyroY();
   float gz = myIMU.readFloatGyroZ();
 
-  // --- 3. Compute Roll / Pitch (Accel fallback) ---
-  float roll_acc  = atan2f(ay, az) * RAD_TO_DEG;
-  float pitch_acc = atan2f(-ax, sqrtf(ay * ay + az * az)) * RAD_TO_DEG; 
+  // --- 3. Read Magnetometer ---
+  sensors_event_t mag_event;
+  mag.getEvent(&mag_event);
+  float mx = mag_event.magnetic.x;
+  float my = mag_event.magnetic.y;
+  float mz = mag_event.magnetic.z;
 
-  // --- 4. Complementary Filter (UNCHANGED) ---
-  roll  = alpha * (roll  + gx * dt) + (1.0f - alpha) * roll_acc;
-  pitch = alpha * (pitch + gy * dt) + (1.0f - alpha) * pitch_acc;
+  // --- 4. Madgwick 9-DOF Fusion ---
+  // If the sensor spins backwards, axes might need to be inverted: e.g., mx, my, mz -> -my, -mx, mz
+  filter.update(gx, gy, gz, ax, ay, az, mx, my, mz);
 
-  // --- 5. Stationary Detection & Bias Update ---
-  float a_norm = sqrtf(ax * ax + ay * ay + az * az);
-  float w_norm = sqrtf(gx * gx + gy * gy + gz * gz);
-  bool stationary = (fabsf(a_norm - G_NORM_TARGET) < EPS_A) && (w_norm < EPS_W);
-
-  if (stationary) {
-    bz = (1.0f - BETA) * bz + BETA * gz;
-  }
-
-  // --- 6. Yaw Integration ---
-  float gz_corr = gz - bz;
-  if (fabsf(gz_corr) < GZ_DEADBAND) {
-    gz_corr = 0.0f;
-  }
-  yaw += gz_corr * dt;
-
-  // --- 7. Reset Handling ---
+  roll  = filter.getRoll();
+  pitch = filter.getPitch();
+  
+  // --- 5. Yaw Reset Handling ---
   if (digitalRead(YAW_RESET_PIN) == LOW) {
-    yaw = 0.0f;
+    yawOffset = filter.getYaw();
   }
+  yaw = filter.getYaw() - yawOffset; // Apply offset
 
-  // --- 8. BLE Transmission (Send at restricted rate, e.g. 20Hz) ---
+  // --- 6. BLE Transmission (Send at restricted rate, e.g. 20Hz) ---
   static uint32_t lastSendMs = 0;
   if (millis() - lastSendMs > 50) { // 20Hz
     lastSendMs = millis();
     
-    // Read IMU 2 (LIS3DH) for Logging
-    float ax2=0, ay2=0, az2=0;
-    if (hasLIS) {
-       sensors_event_t event; 
-       imuLIS.getEvent(&event);
-       ax2 = event.acceleration.x / 9.81f; 
-       ay2 = event.acceleration.y / 9.81f;
-       az2 = event.acceleration.z / 9.81f;
-    }
-
     if (central && central.connected()) {
-      // Pack Data: [Roll, Pitch, Yaw, Ax1, Ay1, Az1, Ax2, Ay2, Az2] (36 bytes)
-      float data[9];
+      // Read ToF
+      VL53L0X_RangingMeasurementData_t measure;
+      lox.rangingTest(&measure, false); 
+      float distM = 0.0f;
+      if (measure.RangeStatus != 4) {
+          distM = measure.RangeMilliMeter / 1000.0f;
+      } else {
+          distM = -1.0f; // Error/Out of range
+      }
+
+      // Pack Data: [Roll, Pitch, Yaw, Ax, Ay, Az, Dist] (28 bytes)
+      float data[7];
       data[0] = roll;
       data[1] = pitch;
       data[2] = yaw;
-      data[3] = ax;  // Ax1
-      data[4] = ay;  // Ay1
-      data[5] = az;  // Az1
-      data[6] = ax2;
-      data[7] = ay2;
-      data[8] = az2;
+      data[3] = ax;
+      data[4] = ay;
+      data[5] = az;
+      data[6] = distM;
       
-      imuChar.writeValue((byte*)data, 36);
+      imuChar.writeValue((byte*)data, 28);
     }
   }
 }
